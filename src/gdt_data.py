@@ -1,5 +1,5 @@
+import csv
 import re
-import unicodedata
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from lxml import html
@@ -24,41 +24,40 @@ def text(element):
     return " ".join(" ".join(element.itertext()).split())
 
 
-def options(body):
-    document = html.fromstring(body.strip() or "<html></html>")
-    return [
-        (option.get("value"), text(option))
-        for option in document.xpath("//option")
-        if option.get("value") and "hết" not in text(option).casefold()
-    ]
-
-
-def name_key(name):
-    # Chuẩn hóa biến thể tên để đối chiếu, tên gốc vẫn được giữ trong kết quả.
-    name = unicodedata.normalize("NFD", name.casefold().replace("đ", "d"))
-    name = "".join(
-        character for character in name if not unicodedata.combining(character)
-    )
-    name = re.sub(r"^(tinh|thanh pho|tp\.?)\s+", "", name)
-    name = " ".join(name.split())
-    return "hue" if name == "thua thien hue" else name
-
-
-def match_locations(available, requested):
-    # Ưu tiên tên nguyên văn và chỉ nhận địa bàn khi tìm được đúng một mã.
-    matched = []
-    missing = []
-    for name in requested:
-        candidates = [code for code, label in available if label == name]
-        if not candidates:
-            candidates = [
-                code for code, label in available if name_key(label) == name_key(name)
-            ]
-        if len(candidates) == 1:
-            matched.append((candidates[0], name))
-        else:
-            missing.append(name)
-    return matched, missing
+def load_divisions(path):
+    # CSV đã lưu đủ quan hệ ba cấp, không cần đối chiếu tên qua GDT.
+    fields = {"maTinh", "tenTinh", "maHuyen", "tenHuyen", "maXa", "tenXa"}
+    divisions = []
+    seen = set()
+    with path.open(encoding="utf-8-sig", newline="") as source:
+        reader = csv.DictReader(source)
+        if (
+            len(reader.fieldnames or []) != len(fields)
+            or set(reader.fieldnames or []) != fields
+        ):
+            raise ValueError(f"{path}: cần đủ 6 cột mã và tên tỉnh, huyện, xã.")
+        for number, row in enumerate(reader, 2):
+            if set(row) != fields or any(
+                not isinstance(value, str) or not value.strip()
+                for value in row.values()
+            ):
+                raise ValueError(f"{path}, dòng {number}: thiếu hoặc thừa dữ liệu.")
+            row = {key: value.strip() for key, value in row.items()}
+            if not (
+                re.fullmatch(r"[0-9]{3}", row["maTinh"])
+                and re.fullmatch(r"[0-9]{5}", row["maHuyen"])
+                and re.fullmatch(r"[0-9]{7}", row["maXa"])
+                and row["maHuyen"].startswith(row["maTinh"])
+                and row["maXa"].startswith(row["maHuyen"])
+            ):
+                raise ValueError(f"{path}, dòng {number}: mã GDT ba cấp không hợp lệ.")
+            if row["maXa"] in seen:
+                raise ValueError(f"{path}, dòng {number}: trùng mã xã {row['maXa']}.")
+            seen.add(row["maXa"])
+            divisions.append(row)
+    if not divisions:
+        raise ValueError(f"{path}: danh sách địa bàn rỗng.")
+    return divisions
 
 
 def captcha_details(body):
@@ -75,11 +74,11 @@ def captcha_details(body):
     return query["uid"][0], sources[0]
 
 
-def result_url(credentials, province, ward, search_type, page):
-    # Quận/Huyện và Kỳ lập bộ để trống theo yêu cầu của luồng tra cứu.
+def result_url(credentials, province, district, ward, search_type, page):
+    # Dùng đủ ba mã địa bàn đã lưu, Kỳ lập bộ vẫn để trống.
     params = {
         "maTinh": province,
-        "maHuyen": "",
+        "maHuyen": district,
         "maXa": ward,
         "hoTen": "",
         "kyLb": "",
@@ -100,8 +99,16 @@ def parse_results(body, page):
     document = html.fromstring(body)
     if document.xpath("//title[normalize-space()='Request Rejected']"):
         raise InvalidResponseError("GDT từ chối request tra cứu (Request Rejected).")
-    empty = document.xpath("//div[@class='message-info']")
-    if empty and text(empty[0]) == "Không tìm thấy kết quả":
+    notices = [
+        text(element)
+        for element in document.xpath(
+            "//div[@class='message-info' or @class='message-error']"
+        )
+    ]
+    for notice in notices:
+        if "mã xác nhận" in notice.casefold():
+            raise InvalidResponseError(f"GDT báo lỗi CAPTCHA: {notice}")
+    if "Không tìm thấy kết quả" in notices:
         return {"columns": [], "rows": [], "next_page": None}
     tables = document.xpath(
         "//table[contains(concat(' ', @class, ' '), ' ta_border ')]"

@@ -1,61 +1,85 @@
 # Tax crawler
 
-Dự án dùng Python 3.12, uv và Scrapy để tra cứu thông tin hộ khoán từ GDT.
+This script uses Scrapy to collect household business information from [GDT](https://www.gdt.gov.vn/wps/portal/home/hct). It uses administrative divisions from before 01/07/2025 (1 July 2025).
 
-## Cài đặt
+## Prerequisites
+
+- Windows: use WSL with Ubuntu and follow the instructions below. On macOS and Ubuntu, go straight to installation.
+
+## Installation
+
+### 1. Install Git, curl and Tesseract OCR
+
+Tesseract is a system program that reads CAPTCHA images. Install it separately from the Python dependencies.
+Follow the instructions for your operating system.
+
+**Ubuntu / WSL (Ubuntu):**
 
 ```sh
+sudo apt update
+sudo apt install -y git curl ca-certificates tesseract-ocr
+```
+
+**macOS:** if you don't have [Homebrew](https://brew.sh/), install it with the command below, then follow
+the **Next steps** shown at the end of the installation to add `brew` to your PATH:
+
+```sh
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
+Then install the tools:
+
+```sh
+brew install git curl tesseract
+```
+
+The Tesseract installation commands follow the [official documentation](https://tesseract-ocr.github.io/tessdoc/Installation.html).
+Check that the tools are installed:
+
+```sh
+git --version
+curl --version
+tesseract --version
+```
+
+### 2. Install uv and Python 3.12
+
+The remaining steps apply to Ubuntu, WSL/Ubuntu and macOS.
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) with the standalone installer:
+
+```sh
+curl -LsSf https://astral.sh/uv/install.sh | sh
+. "$HOME/.local/bin/env"
+uv --version
+```
+
+Use uv to [install Python 3.12](https://docs.astral.sh/uv/guides/install-python/):
+
+```sh
+uv python install 3.12
+```
+
+### 3. Clone the repository and install dependencies
+
+```sh
+git clone https://github.com/HuaTanSang/tax-crawler.git
+cd tax-crawler
 uv sync --locked
+uv run --locked python --version
+```
+
+### 4. Install the pre-commit hook
+
+Run this once in the cloned repository to enable automatic checks before each commit:
+
+```sh
 uv run --locked pre-commit install
 ```
 
-Lệnh cài hook cần chạy trong một Git repository. Nếu vừa tạo thư mục dự án mới, chạy `git init` trước.
-OCR cần chương trình Tesseract trong PATH. Trên Ubuntu/WSL, cài bằng lệnh sau.
+## Run the job
 
-```sh
-sudo apt install tesseract-ocr
-```
-
-## Chạy job
+From the `tax-crawler` directory, run:
 
 ```sh
 uv run --locked src/gdt_spider.py
 ```
-
-Script tự mở một phiên GDT, lấy UUID và lưu ảnh CAPTCHA vào `output/captcha.png`.
-Hàm `get_captcha(image_path)` trong `src/gdt_ocr.py` đọc ảnh này bằng OpenCV và
-Tesseract. Scrapy giữ cookie, UUID và mã nhận diện được cho các truy vấn cùng phiên.
-Job xử lý tuần tự từng trang theo thứ tự địa bàn trong tệp JSON.
-
-Khi nhận phản hồi rỗng, `Request Rejected` hoặc thiếu bảng kết quả, job lưu phản
-hồi vào `output/last_response.html`, lấy phiên/ảnh mới, OCR lại và thử đúng trang
-đang lỗi. Mỗi trang có tối đa 3 lần đổi phiên. OCR trống được thử lại với tối đa
-3 ảnh mới. Lỗi cấu trúc cột hoặc phân trang được báo để kiểm tra dữ liệu.
-Lỗi ở bước tải biểu mẫu được lưu riêng vào `output/last_form.html`.
-
-Job đọc địa bàn cần crawl từ `data/administrative_division.json`, đối chiếu mã
-tỉnh/xã bằng danh sách GDT, rồi duyệt 5 loại danh sách và các trang kết quả.
-Quận/Huyện và Kỳ lập bộ để trống. Tên địa bàn trong kết quả giữ theo tệp của bạn.
-Các biến thể dấu, chữ hoa/thường và tên tỉnh như Huế/Thừa Thiên Huế được đối chiếu
-khi xác định được một mã duy nhất. Địa bàn thiếu mã hoặc khớp nhiều mã được báo
-trong log. Job vẫn lấy phần khớp được và kết thúc với trạng thái chưa hoàn tất.
-
-Kết quả được ghi từng trang vào một tệp `output/gdt-<thời điểm chạy>.jsonl`.
-Mỗi dòng JSON chứa mã và tên
-địa bàn, loại danh sách, số trang, tiêu đề cột và danh sách bản ghi. Giá trị thuế
-và mã số thuế giữ ở dạng chuỗi theo nguồn.
-
-Mỗi lần chạy duyệt từ đầu và tạo một tệp kết quả riêng.
-Trong cùng một lần chạy, phục hồi phiên tiếp tục ở trang đang lỗi và giữ dữ liệu
-đã xuất trước đó.
-
-## Kiểm tra trước khi commit
-
-```sh
-uv run --locked ruff check .
-uv run --locked ruff format --check .
-uv run --locked python -m unittest discover -s tests
-uv run --locked pre-commit run --all-files
-```
-
-Các hook dùng đúng phiên bản Ruff trong `uv.lock`. Chạy `uv lock` khi thay đổi dependency.

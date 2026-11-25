@@ -1,20 +1,57 @@
 # Ghi chú dự án
 
-Cập nhật ngày 24/11/2026 theo trao đổi và mã hiện có trong workspace.
+Cập nhật ngày 25/11/2026 theo trao đổi và mã hiện có trong workspace.
 
 ## Luồng người dùng muốn
 
-1. Đọc `data/administrative_division.json`.
-2. Duyệt từng tỉnh/thành phố và các xã/phường/đặc khu bên trong.
-3. Đối chiếu mã địa bàn với GDT để gửi truy vấn.
+1. Đọc danh sách tên và mã địa bàn đã lưu cục bộ tại `data/ds_full.csv`.
+2. Duyệt theo 3 cấp tỉnh/thành phố → quận/huyện → xã/phường/thị trấn.
+3. Dùng trực tiếp `maTinh`, `maHuyen`, `maXa` đã lưu để gửi truy vấn,
+   không fetch lại danh sách địa bàn hoặc đối chiếu tên qua endpoint khi chạy.
 4. Script tự tạo phiên GDT, lấy UUID và ảnh CAPTCHA để OCR tự động.
 5. Dùng lại CAPTCHA cùng UUID, duyệt 5 danh sách và các trang kết quả.
 6. Ghi dữ liệu ra tệp.
 
-Tên tệp đúng là `administrative_division.json`. Người dùng từng gõ
-`administrative_devision.json` khi nhắc đến tệp này.
+Quyết định ngày 25/11/2026 thay thế luồng 2 cấp và yêu cầu để trống `maHuyen`.
+Vẫn để `kyLb` rỗng và không lọc theo mốc 01/07/2025.
+Code đã chuyển sang luồng 3 cấp từ CSV cục bộ, chưa kiểm chứng với GDT trực tiếp.
 
 ## Dữ liệu địa bàn
+
+### Danh sách 3 cấp đã lưu
+
+Repo `/home/tansang/Documents/Crawl_data_gov` có sẵn các tệp trong `Data/`.
+Đã đọc kiểm tra bằng thư viện CSV, chưa truy vấn GDT để kiểm chứng tính hiện hành.
+
+| Tệp | Nội dung đã kiểm tra |
+| --- | --- |
+| `ds_tinh.csv` | 63 dòng, cột `id`, `title` |
+| `ds_huyen_toan_quoc.csv` | 740 dòng, cột `id`, `title` |
+| `ds_xa_toan_quoc.csv` | 12.132 dòng, cột `id`, `title` |
+| `ds_full.csv` | 12.132 dòng, đủ mã và tên của cả 3 cấp |
+
+`ds_full.csv` có các cột `maXa`, `tenXa`, `maHuyen`, `tenHuyen`, `maTinh`, `tenTinh`.
+Tệp này có 63 mã tỉnh, 716 mã huyện và 12.132 mã xã khác nhau, không có dòng thiếu
+giá trị trong 6 cột trên. Có thể dùng trực tiếp quan hệ trong tệp để tạo truy vấn.
+Số mã huyện trong tệp ghép khác số dòng của danh sách huyện riêng, nên chưa kết luận
+tệp ghép bao phủ mọi huyện. Giữ mã dưới dạng chuỗi, bảo toàn số 0 đầu nếu có.
+
+Ví dụ một dòng gồm An Giang (`805`) → Huyện An Phú (`80505`) →
+Thị trấn An Phú (`8050509`). Đây là danh sách 3 cấp đã lưu từ repo tham khảo,
+chưa xác nhận GDT hiện còn trả kết quả cho mọi mã cũ.
+Đã sao chép nguyên bản `Data/ds_full.csv` vào `data/ds_full.csv` của tax-crawler,
+đối chiếu byte và SHA-256 trùng khớp
+`bddf2821a1548e29c9a4b5cd9dcfb58ea0a0fac55229e9212862801aad82d543`.
+Job đọc bản sao này, không phụ thuộc repo tham khảo khi chạy.
+Không cần các danh sách mã crawl dựng sẵn vì job đã duyệt đủ 5 `searchType` cho
+từng dòng địa bàn. Các danh sách tên/mã riêng lẻ chứa thông tin trùng với tệp ghép
+đối với những xã có trong tệp, nên chưa sao chép thêm.
+
+Áp dụng cách repo tham khảo dùng mã GDT 3 cấp đã lưu để tạo truy vấn trực tiếp.
+Giữ Scrapy và bộ parser đang có, không thêm Selenium, pandas hay bước cắt mã xã
+để suy ra tỉnh/huyện. Luồng hiện tại đọc đủ ba mã từ các cột CSV.
+
+### Tệp 2 cấp hiện có trong tax-crawler
 
 `data/administrative_division.json` hiện là một object JSON với 34 tỉnh/thành phố
 và 3.321 đơn vị cấp xã. Cấu trúc ví dụ được rút gọn như sau.
@@ -25,9 +62,12 @@ và 3.321 đơn vị cấp xã. Cấu trúc ví dụ được rút gọn như sa
 }
 ```
 
+Tên tệp đúng là `administrative_division.json`. Người dùng từng gõ
+`administrative_devision.json` khi nhắc đến tệp này.
 Các lần xử lý trước đã chuyển từ tên gọn của xã/phường sang tên đầy đủ có tiền tố.
-Tệp này chứa tên địa bàn. Mã GDT cần được đối chiếu từ các endpoint của GDT.
-HAR có ví dụ tên `Phương Long Sơn` tại GDT, cho thấy cần kiểm tra sai khác tên.
+Tệp chỉ chứa tên tỉnh và xã, thiếu cấp huyện và mã GDT. Luồng cũ đối chiếu tên với
+endpoint GDT. Theo yêu cầu mới, job dùng CSV có đủ mã và quan hệ ở trên.
+Tệp JSON này được giữ làm dữ liệu tham khảo.
 
 ## Endpoint xác định từ HAR
 
@@ -41,11 +81,11 @@ Các endpoint bên dưới nằm trên host `https://www.gdt.gov.vn`.
 | Kết quả | `/TTHKApp/jsp/results.jsp` |
 
 Hai endpoint địa bàn trả các thẻ HTML `option` có mã và tên.
-Biểu mẫu có 4 trường bắt buộc gồm Tỉnh/Thành phố, Xã/Phường/Đặc khu,
-Tìm theo và Mã xác nhận.
+Đây là các endpoint của luồng 2 cấp trước đây, giữ lại làm thông tin tham khảo.
+Luồng mới dùng danh sách lưu cục bộ nên không gọi lại các endpoint địa bàn khi chạy.
 Tham số kết quả gồm `maTinh`, `maHuyen`, `maXa`, `hoTen`, `kyLb`,
 `diaChi`, `maSoThue`, `searchType`, `uuid`, `captcha` và `pageNumber`.
-Giữ Quận/Huyện và Kỳ lập bộ rỗng theo yêu cầu đã chốt.
+Theo yêu cầu mới, điền mã Quận/Huyện từ dữ liệu cục bộ và giữ Kỳ lập bộ rỗng.
 
 | searchType | Tìm theo |
 | --- | --- |
@@ -62,16 +102,18 @@ Kết quả rỗng trong HAR có thông báo `Không tìm thấy kết quả`.
 
 ## Trạng thái code hiện tại
 
+- Đã triển khai yêu cầu 3 cấp ngày 25/11/2026. `load_divisions` đọc `data/ds_full.csv`,
+  kiểm tra cột, giá trị thiếu, mã trùng và quan hệ mã tỉnh–huyện–xã trước khi truy vấn.
+  Hàm tạo URL gửi đủ `maTinh`, `maHuyen`, `maXa`, giữ `kyLb` rỗng.
+  Metadata kết quả có thêm `district_code` và `district`.
 - `src/gdt_spider.py` dùng Scrapy, xử lý tuần tự địa bàn và từng trang.
 - Spider tự tải trang tra cứu, lấy UID từ ảnh `captchaCtn` làm UUID của phiên,
   tải ảnh vào `output/captcha.png` rồi gọi `src/gdt_ocr.py` để nhận diện mã.
   Scrapy giữ cookie cho các request trong phiên. HAR được dùng làm mẫu kiểm tra cấu trúc trong
   quá trình phát triển.
-- Spider đã đọc `data/administrative_division.json` làm danh sách cần crawl.
-  Danh sách GDT được dùng để đối chiếu mã địa bàn. Kết quả giữ tên trong tệp.
-  Bộ đối chiếu ưu tiên tên nguyên văn, sau đó kiểm tra biến thể dấu/chữ hoa/thường,
-  tiền tố tỉnh/thành và Huế/Thừa Thiên Huế. Trường hợp thiếu hoặc khớp nhiều mã
-  được ghi log lỗi. Job lấy phần khớp được và báo chưa hoàn tất khi còn lỗi.
+- Spider duyệt trực tiếp từng dòng địa bàn trong CSV, không fetch danh mục địa bàn
+  hoặc đối chiếu tên. Mã giữ dưới dạng chuỗi và tên giữ theo CSV.
+  Đã bỏ bộ đối chiếu tên của luồng 2 cấp.
 - Cách chạy hiện tại là `uv run --locked src/gdt_spider.py`.
 - Job hiện ghi từng trang vào `output/gdt-<thời điểm chạy>.jsonl`.
   Mỗi lần chạy bắt đầu từ đầu và tạo tệp riêng.
@@ -91,8 +133,20 @@ phiên đó cho các truy vấn.
 
 Theo yêu cầu mới nhất, đã chuyển hàm OCR người dùng gửi sang đầu vào là tệp ảnh
 tải xuống. Giữ resize 390×150, grayscale, dilation kernel 6×6, ngưỡng 150,
-median blur 5, lề trắng 30 pixel dưới ảnh và Tesseract `--psm 13`.
+median blur 5 và lề trắng 30 pixel dưới ảnh. Ban đầu dùng Tesseract `--psm 13`,
+đã đổi sang `--psm 7` sau khi kiểm tra ảnh thực ngày 25/11/2026.
 Phần chụp màn hình và crop tọa độ được bỏ vì đã có ảnh CAPTCHA riêng.
+
+Lượt chạy 01:51 ngày 25/11/2026 thất bại ngay trang đầu. `last_response.html`
+chứa thông báo `Vui lòng nhập đúng mã xác nhận.` trong `div.message-info`.
+Đã xác nhận `captcha.png` là PNG RGBA 130×50, cả ba kênh RGB đều bằng 0,
+chữ nằm ở kênh alpha. Code cũ đọc `IMREAD_COLOR` bỏ alpha, tạo ảnh đen toàn bộ
+và Tesseract đọc ra `a`. Code mới giữ alpha, ghép lên nền trắng rồi OCR.
+Tesseract thật đọc ảnh mẫu được `nc24b`, khớp nội dung ảnh đã xem.
+Mẫu được lưu ở `tests/fixtures/captcha_transparent.png` làm kiểm tra hồi quy.
+Chỉ mã OCR đủ 5 ký tự chữ/số mới được gửi. Log hiển thị chuỗi OCR, không coi
+việc đọc ra chuỗi là GDT đã xác thực thành công. Parser báo riêng thông báo lỗi
+CAPTCHA từ máy chủ và giữ cơ chế đổi phiên/thử lại có giới hạn.
 
 Job đổi phiên và OCR lại khi phản hồi kết quả rỗng, bị từ chối hoặc thiếu bảng.
 Tối đa 3 lần đổi phiên cho một trang, sau đó báo lỗi. Trang đã xuất trong cùng
@@ -100,8 +154,9 @@ lượt chạy được giữ lại. Lỗi cấu trúc bảng được báo đ�
 Chạy lại toàn bộ lệnh vẫn tạo lượt mới từ đầu.
 
 Thư viện Python thêm NumPy, opencv-python-headless và pytesseract.
-Tesseract là chương trình hệ thống cần có trong PATH. Môi trường sandbox chưa có
-Tesseract và lỗi DNS khi tải thư viện, nên độ chính xác OCR thật chưa được đo.
+Tesseract là chương trình hệ thống cần có trong PATH. Các lần kiểm tra trước chưa có
+Tesseract và gặp lỗi DNS khi tải thư viện. Lần này đã có thư viện và Tesseract,
+đã kiểm tra OCR thật với một ảnh mẫu. Chưa đo độ chính xác trên nhiều CAPTCHA.
 
 Người dùng đã chạy được Scrapy 2.13.3 trên máy thật. Lượt chạy lúc 16:41 nhận
 HTTP 200 nhưng dừng với `invalid_response`. Database của lượt đó có 0 trang,
@@ -126,8 +181,17 @@ hiệu quả với GDT trực tiếp vẫn chưa xác nhận.
 
 ## Kiểm tra và giới hạn
 
-- Bộ test hiện tại có 18 test cho phiên/CAPTCHA, tham số truy vấn, danh sách địa bàn,
-  đối chiếu tên/mã, tiêu đề gộp ô, phản hồi rỗng và phân trang.
+- Đã chạy đạt 21 test sau khi sửa xử lý PNG trong suốt và thông báo lỗi CAPTCHA.
+  Test kiểm tra ảnh RGBA/RGB/grayscale thật, từ chối chuỗi OCR sai độ dài,
+  và giữ thông báo GDT báo sai mã xác nhận. Phần gọi Tesseract trong unit test
+  được mô phỏng; OCR bằng chương trình Tesseract thật được kiểm tra riêng trên ảnh mẫu.
+  Các test còn kiểm tra phiên/CAPTCHA,
+  tham số truy vấn 3 cấp, đọc CSV địa bàn, tiêu đề gộp ô, phản hồi rỗng và phân trang.
+- Đã đọc toàn bộ `data/ds_full.csv` bằng loader mới, kiểm tra 12.132 mã xã duy nhất,
+  quan hệ mã tỉnh–huyện–xã hợp lệ và tên/mã nhất quán trong bản sao.
+- Test luồng 3 cấp dùng hai xã trùng tên thuộc hai huyện khác nhau, đủ 5 loại
+  danh sách và có phân trang. Tất cả request tra cứu dùng mã cục bộ, không có
+  request tải danh mục địa bàn. Test phục hồi phiên giữ nguyên cả ba mã khi thử lại.
 - Đã kiểm tra 10 phản hồi kết quả trong HAR.
 - Đã chạy thử Scrapy offline với dữ liệu HAR cho 5 danh sách, 9 trang và 120 dòng.
   Bài thử giới hạn ở hai trang mỗi danh sách có dữ liệu để mô phỏng trang cuối.
@@ -144,16 +208,17 @@ hiệu quả với GDT trực tiếp vẫn chưa xác nhận.
   vẫn chưa được xác nhận.
 - Bản nhập tay trên máy người dùng đã lưu 725 trang, 10.709 dòng trước khi
   phản hồi rỗng sau khoảng 15 phút. Thời hạn UUID/CAPTCHA là giả thuyết chưa xác nhận.
-- Với dữ liệu HAR hiện có, bộ đối chiếu khớp đủ 34 tỉnh/thành.
+- Trong luồng 2 cấp trước đây, với dữ liệu HAR, bộ đối chiếu khớp đủ 34 tỉnh/thành.
   An Giang khớp được 35 trong 102 xã/phường của tệp, còn 67 đơn vị chưa có mã
   tương ứng trong danh sách GDT đã ghi lại. Một số ví dụ gồm Phường Long Xuyên,
   Phường Châu Đốc và Xã An Phú.
 
 ## Việc cần tiếp tục
 
-- Xác minh mã GDT cho các địa bàn chưa khớp, đặc biệt 67 đơn vị An Giang trong
-  đối chiếu với HAR hiện có.
+- Kiểm chứng truy vấn bằng mã GDT 3 cấp cũ với GDT trực tiếp. Chưa kết luận
+  mọi địa bàn trong CSV vẫn còn dữ liệu trên máy chủ.
+- Theo quyết định ngày 25/11/2026, các đơn vị hành chính có trong tệp local
+  2 cấp nhưng GDT chưa trả về đơn vị tương ứng đã được ghi log ở luồng cũ.
+  Việc đối chiếu bổ sung mã cho các địa bàn này tiếp tục tạm hoãn đến khi người dùng
+  yêu cầu. Luồng CSV hiện tại không đối chiếu danh sách 2 cấp này.
 - Kiểm chứng OCR tự động và phục hồi phiên với GDT trực tiếp.
-- Kiểm tra lại `src/process_address_unit.py` trước khi tái tạo dữ liệu.
-  Default hiện trỏ đến `data/vn_only_simplified_json_generated_data_vn_units.json`
-  là một list, trong khi code xử lý hiện yêu cầu object tên tỉnh và danh sách tên xã.

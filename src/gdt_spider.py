@@ -1,10 +1,9 @@
 import argparse
-import json
+import csv
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar
-from urllib.parse import urlencode
 
 import scrapy
 from lxml.etree import LxmlError
@@ -12,13 +11,11 @@ from scrapy.crawler import CrawlerProcess
 from scrapy.utils.defer import maybe_deferred_to_future
 
 from gdt_data import (
-    BASE_URL,
     PAGE_URL,
     SEARCH_TYPES,
     InvalidResponseError,
     captcha_details,
-    match_locations,
-    options,
+    load_divisions,
     parse_results,
     result_url,
 )
@@ -100,24 +97,22 @@ class GdtSpider(scrapy.Spider):
                 continue
             self.credentials = {"uuid": uid, "captcha": captcha}
             # Chỉ thay cặp UUID/CAPTCHA sau khi đã đọc được mã của đúng ảnh.
-            self.logger.info("Đã lấy phiên và nhận diện CAPTCHA mới.")
+            self.logger.info("Đã lấy phiên mới; mã OCR: %s.", captcha)
             return
         raise RuntimeError("OCR thất bại sau 3 ảnh CAPTCHA.")
 
-    def resolve_locations(self, body, requested, context):
-        # Tệp JSON xác định địa bàn cần lấy, danh sách GDT cung cấp mã truy vấn.
-        matched, missing = match_locations(options(body), requested)
-        if missing:
-            self.logger.error(
-                "Địa bàn chưa có mã GDT trong %s: %s", context, ", ".join(missing)
-            )
-        return matched
-
-    async def result_page(self, province, ward, search_type, page):
+    async def result_page(self, division, search_type, page):
         # Một lần tra cứu ban đầu và tối đa ba lần đổi phiên cho cùng trang.
         for attempt in range(4):
             response = await self.fetch(
-                result_url(self.credentials, province[0], ward[0], search_type, page)
+                result_url(
+                    self.credentials,
+                    division["maTinh"],
+                    division["maHuyen"],
+                    division["maXa"],
+                    search_type,
+                    page,
+                )
             )
             try:
                 return parse_results(response.text, page)
@@ -127,9 +122,10 @@ class GdtSpider(scrapy.Spider):
                 if attempt == 3:
                     raise RuntimeError("Trang vẫn lỗi sau 3 lần đổi phiên.") from error
                 self.logger.warning(
-                    "%s / %s / %s / trang %s: %s Lấy phiên mới, thử lại lần %s/3.",
-                    province[1],
-                    ward[1],
+                    "%s / %s / %s / %s / trang %s: %s Lấy phiên mới, thử lại lần %s/3.",
+                    division["tenTinh"],
+                    division["tenHuyen"],
+                    division["tenXa"],
                     search_type,
                     page,
                     error,
@@ -146,37 +142,26 @@ class GdtSpider(scrapy.Spider):
         OUTPUT.mkdir(parents=True, exist_ok=True)
         try:
             await self.renew_session()
-            response = await self.fetch(BASE_URL + "json_option.jsp?cmd=GET_DS_TINH")
-            provinces = self.resolve_locations(
-                response.text, self.divisions, "tỉnh/thành"
-            )
-            for province in provinces:
-                query = urlencode(
-                    {"cmd": "GET_DS_XA", "maTinh": province[0], "maHuyen": ""}
-                )
-                response = await self.fetch(BASE_URL + "json_option.jsp?" + query)
-                wards = self.resolve_locations(
-                    response.text, self.divisions[province[1]], province[1]
-                )
-                for ward in wards:
-                    for search_type in SEARCH_TYPES:
-                        page = 1
-                        while page is not None:
-                            parsed = await self.result_page(
-                                province, ward, search_type, page
-                            )
-                            yield {
-                                # Một item xuất ra JSONL tương ứng một trang kết quả.
-                                "province_code": province[0],
-                                "province": province[1],
-                                "ward_code": ward[0],
-                                "ward": ward[1],
-                                "search_type": search_type,
-                                "list_name": SEARCH_TYPES[search_type],
-                                "page": page,
-                                **parsed,
-                            }
-                            page = parsed["next_page"]
+            # Mỗi dòng CSV đã có mã và tên tỉnh, huyện, xã để truy vấn trực tiếp.
+            for division in self.divisions:
+                for search_type in SEARCH_TYPES:
+                    page = 1
+                    while page is not None:
+                        parsed = await self.result_page(division, search_type, page)
+                        yield {
+                            # Một item xuất ra JSONL tương ứng một trang kết quả.
+                            "province_code": division["maTinh"],
+                            "province": division["tenTinh"],
+                            "district_code": division["maHuyen"],
+                            "district": division["tenHuyen"],
+                            "ward_code": division["maXa"],
+                            "ward": division["tenXa"],
+                            "search_type": search_type,
+                            "list_name": SEARCH_TYPES[search_type],
+                            "page": page,
+                            **parsed,
+                        }
+                        page = parsed["next_page"]
         except Exception:
             self.logger.exception(
                 "Job dừng do lỗi. Các trang đã xuất được giữ trong tệp kết quả."
@@ -189,25 +174,8 @@ def main():
         raise SystemExit("Cần cài Tesseract OCR: sudo apt install tesseract-ocr")
     try:
         # Kiểm tra cấu trúc danh sách địa bàn trước khi gửi request lên GDT.
-        divisions = json.loads(
-            (ROOT / "data" / "administrative_division.json").read_text(encoding="utf-8")
-        )
-        if (
-            not isinstance(divisions, dict)
-            or not divisions
-            or not all(
-                isinstance(name, str)
-                and name.strip()
-                and isinstance(wards, list)
-                and wards
-                and all(isinstance(ward, str) and ward.strip() for ward in wards)
-                for name, wards in divisions.items()
-            )
-        ):
-            raise ValueError(
-                "Tệp địa bàn phải chứa tên tỉnh/thành và danh sách tên xã/phường."
-            )
-    except (OSError, ValueError) as error:
+        divisions = load_divisions(ROOT / "data" / "ds_full.csv")
+    except (OSError, ValueError, csv.Error) as error:
         raise SystemExit(str(error)) from error
     OUTPUT.mkdir(parents=True, exist_ok=True)
     output = OUTPUT / f"gdt-{datetime.now(UTC):%Y%m%dT%H%M%S%fZ}.jsonl"
@@ -222,7 +190,7 @@ def main():
     process.start()
     print(f"Tệp dữ liệu: {output}")
     stats = crawler.stats.get_stats()
-    # Crawl xong nhưng còn lỗi đối chiếu địa bàn cũng được báo là chưa hoàn tất.
+    # Chỉ báo hoàn tất khi Scrapy chạy hết và không có lỗi được ghi nhận.
     if stats.get("finish_reason") != "finished" or stats.get("log_count/ERROR", 0):
         raise SystemExit(
             "Job chưa hoàn tất. Xem đường dẫn phản hồi lỗi được ghi trong log."
