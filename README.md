@@ -83,3 +83,53 @@ From the `tax-crawler` directory, run:
 ```sh
 uv run --locked src/gdt_spider.py
 ```
+
+To crawl one province, pass its GDT code from `data/ds_full.csv`. For example,
+An Giang is `805`:
+
+```sh
+uv run --locked src/gdt_spider.py --province 805
+```
+
+Use `--province CODE1 CODE2` to select several provinces. Repeated codes are
+processed once; unknown codes are rejected before any requests. Without this
+option, the job crawls all provinces. Provinces and their divisions are processed
+sequentially in CSV order, including all five search types and every result page.
+
+Each province has its own directory:
+
+```text
+output/<province-code>/
+  gdt-<first-start-timestamp>.jsonl
+  checkpoint.json
+  crawl.lock
+  captcha.png
+  last_form.html       # saved when the lookup form is invalid
+  last_response.html   # saved when a result page is invalid
+```
+
+Each JSONL line contains one result page. The job saves the complete page to disk
+before updating the checkpoint, including pages with no results. The checkpoint
+records the next division/search type/page, the output filename, the confirmed
+byte length, and a fingerprint of that province's ordered division list and
+search types.
+
+Press **Ctrl+C once** and wait for Scrapy to close. Run the same command later to
+resume each selected province using a fresh session and CAPTCHA. The job appends
+to the original timestamped file; it does not create another file on resume.
+You can select a different province while another is paused. Completed provinces
+are checked and skipped without fetching another session or result page.
+
+After an abrupt stop, bytes beyond the confirmed checkpoint length are discarded
+and the unconfirmed page is fetched again. This prevents duplicate pages caused
+by resuming. An output shorter than the confirmed length, a missing output or
+checkpoint, a malformed checkpoint, or a changed division list stops the job and
+preserves the files for inspection. Keep the output and checkpoint together and
+do not edit the division list while resuming. A file lock prevents two jobs from
+writing the same province at once; the lock is released when the process ends.
+
+To start a fresh crawl for a province, stop any job using it, move its entire
+directory outside `output/` to keep the previous data, then run the command again.
+Older output files in the root of `output/` are preserved and are not imported
+into checkpoints. Resume protection does not remove duplicates already present
+in GDT data or guarantee a fixed snapshot when GDT changes its results.

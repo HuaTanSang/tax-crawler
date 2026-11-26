@@ -1,7 +1,6 @@
 import argparse
 import csv
 import shutil
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar
 
@@ -10,14 +9,15 @@ from lxml.etree import LxmlError
 from scrapy.crawler import CrawlerProcess
 from scrapy.utils.defer import maybe_deferred_to_future
 
+from gdt_checkpoint import Checkpoint
 from gdt_data import (
     PAGE_URL,
-    SEARCH_TYPES,
     InvalidResponseError,
     captcha_details,
     load_divisions,
     parse_results,
     result_url,
+    select_provinces,
 )
 from gdt_ocr import get_captcha
 
@@ -44,9 +44,10 @@ class GdtSpider(scrapy.Spider):
         },
     }
 
-    def __init__(self, divisions, **kwargs):
+    def __init__(self, provinces, **kwargs):
         super().__init__(**kwargs)
-        self.divisions = divisions
+        self.provinces = provinces
+        self.completed = False
         self.credentials = {}
         self.headers = {"Referer": PAGE_URL, "X-Requested-With": "XMLHttpRequest"}
 
@@ -75,7 +76,7 @@ class GdtSpider(scrapy.Spider):
             try:
                 uid, image_url = captcha_details(response.text)
             except (ValueError, LxmlError):
-                (OUTPUT / "last_form.html").write_bytes(response.body)
+                (self.directory / "last_form.html").write_bytes(response.body)
                 raise
             image_response = await self.fetch(
                 response.urljoin(image_url),
@@ -88,7 +89,7 @@ class GdtSpider(scrapy.Spider):
                 "Content-Type", b""
             ).lower().startswith(b"image/"):
                 raise ValueError("Không tải được ảnh CAPTCHA.")
-            image = OUTPUT / "captcha.png"
+            image = self.directory / "captcha.png"
             image.write_bytes(image_response.body)
             try:
                 captcha = get_captcha(image)
@@ -102,8 +103,8 @@ class GdtSpider(scrapy.Spider):
         raise RuntimeError("OCR thất bại sau 3 ảnh CAPTCHA.")
 
     async def result_page(self, division, search_type, page):
-        # Một lần tra cứu ban đầu và tối đa ba lần đổi phiên cho cùng trang.
-        for attempt in range(4):
+        # Một lần tra cứu ban đầu và tối đa 10 lần đổi phiên cho cùng trang.
+        for attempt in range(11):
             response = await self.fetch(
                 result_url(
                     self.credentials,
@@ -118,8 +119,8 @@ class GdtSpider(scrapy.Spider):
                 return parse_results(response.text, page)
             except InvalidResponseError as error:
                 # Giữ phản hồi để chẩn đoán trước khi lấy CAPTCHA mới và thử lại.
-                (OUTPUT / "last_response.html").write_bytes(response.body)
-                if attempt == 3:
+                (self.directory / "last_response.html").write_bytes(response.body)
+                if attempt == 10:
                     raise RuntimeError("Trang vẫn lỗi sau 3 lần đổi phiên.") from error
                 self.logger.warning(
                     "%s / %s / %s / %s / trang %s: %s Lấy phiên mới, thử lại lần %s/3.",
@@ -134,67 +135,68 @@ class GdtSpider(scrapy.Spider):
                 await self.renew_session()
             except (ValueError, LxmlError):
                 # Lỗi cấu trúc dữ liệu cần kiểm tra parser, đổi CAPTCHA sẽ không sửa được.
-                (OUTPUT / "last_response.html").write_bytes(response.body)
+                (self.directory / "last_response.html").write_bytes(response.body)
                 raise
 
     async def start(self):
         # Đi tuần tự để khi đổi phiên, các request tiếp theo dùng ngay mã mới.
-        OUTPUT.mkdir(parents=True, exist_ok=True)
         try:
-            await self.renew_session()
-            # Mỗi dòng CSV đã có mã và tên tỉnh, huyện, xã để truy vấn trực tiếp.
-            for division in self.divisions:
-                for search_type in SEARCH_TYPES:
-                    page = 1
-                    while page is not None:
+            for province, divisions in self.provinces.items():
+                self.directory = OUTPUT / province
+                with Checkpoint(self.directory, divisions) as checkpoint:
+                    self.logger.info("Tệp dữ liệu: %s", checkpoint.output)
+                    if checkpoint.query is None:
+                        self.logger.info("Tỉnh %s đã hoàn tất; bỏ qua.", province)
+                        continue
+                    if shutil.which("tesseract") is None:
+                        raise RuntimeError(
+                            "Cần cài Tesseract OCR: sudo apt install tesseract-ocr"
+                        )
+                    self.logger.info("Tiếp tục từ %s", checkpoint.state["next_query"])
+                    await self.renew_session()
+                    while checkpoint.query is not None:
+                        division, search_type, page = checkpoint.query
                         parsed = await self.result_page(division, search_type, page)
-                        yield {
-                            # Một item xuất ra JSONL tương ứng một trang kết quả.
-                            "province_code": division["maTinh"],
-                            "province": division["tenTinh"],
-                            "district_code": division["maHuyen"],
-                            "district": division["tenHuyen"],
-                            "ward_code": division["maXa"],
-                            "ward": division["tenXa"],
-                            "search_type": search_type,
-                            "list_name": SEARCH_TYPES[search_type],
-                            "page": page,
-                            **parsed,
-                        }
-                        page = parsed["next_page"]
+                        yield checkpoint.save(parsed)
+            self.completed = True
         except Exception:
             self.logger.exception(
-                "Job dừng do lỗi. Các trang đã xuất được giữ trong tệp kết quả."
+                "Job dừng do lỗi. Chạy lại cùng lệnh để tiếp tục checkpoint từng tỉnh."
             )
 
 
 def main():
-    argparse.ArgumentParser(description="Crawl thông tin hộ khoán GDT.").parse_args()
-    if shutil.which("tesseract") is None:
-        raise SystemExit("Cần cài Tesseract OCR: sudo apt install tesseract-ocr")
+    parser = argparse.ArgumentParser(description="Crawl thông tin hộ khoán GDT.")
+    parser.add_argument(
+        "--province",
+        nargs="+",
+        action="extend",
+        metavar="MA_TINH",
+        help="Mã GDT của các tỉnh cần crawl; mặc định là tất cả tỉnh trong CSV.",
+    )
+    args = parser.parse_args()
     try:
         # Kiểm tra cấu trúc danh sách địa bàn trước khi gửi request lên GDT.
         divisions = load_divisions(ROOT / "data" / "ds_full.csv")
+        provinces = select_provinces(divisions, args.province)
     except (OSError, ValueError, csv.Error) as error:
         raise SystemExit(str(error)) from error
-    OUTPUT.mkdir(parents=True, exist_ok=True)
-    output = OUTPUT / f"gdt-{datetime.now(UTC):%Y%m%dT%H%M%S%fZ}.jsonl"
-    # Tách tệp theo từng lượt chạy để bảo toàn dữ liệu của những lượt trước.
-    process = CrawlerProcess(
-        {
-            "FEEDS": {str(output): {"format": "jsonlines", "encoding": "utf-8"}},
-        }
-    )
+    process = CrawlerProcess()
     crawler = process.create_crawler(GdtSpider)
-    process.crawl(crawler, divisions=divisions)
+    process.crawl(crawler, provinces=provinces)
     process.start()
-    print(f"Tệp dữ liệu: {output}")
     stats = crawler.stats.get_stats()
     # Chỉ báo hoàn tất khi Scrapy chạy hết và không có lỗi được ghi nhận.
-    if stats.get("finish_reason") != "finished" or stats.get("log_count/ERROR", 0):
+    if (
+        crawler.spider is None
+        or not crawler.spider.completed
+        or stats.get("finish_reason") != "finished"
+        or stats.get("log_count/ERROR", 0)
+    ):
         raise SystemExit(
-            "Job chưa hoàn tất. Xem đường dẫn phản hồi lỗi được ghi trong log."
+            "Job chưa hoàn tất. Chạy lại cùng lệnh để tiếp tục checkpoint từng tỉnh."
         )
+    print("Đã hoàn tất tất cả tỉnh được chọn.")
 
 
 if __name__ == "__main__":

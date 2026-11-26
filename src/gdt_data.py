@@ -60,6 +60,20 @@ def load_divisions(path):
     return divisions
 
 
+def select_provinces(divisions, codes=None):
+    provinces = {}
+    for division in divisions:
+        provinces.setdefault(division["maTinh"], []).append(division)
+    if codes is None:
+        return provinces
+    unknown = set(codes) - provinces.keys()
+    if unknown:
+        raise ValueError(
+            f"Mã tỉnh không có trong ds_full.csv: {', '.join(sorted(unknown))}"
+        )
+    return {code: rows for code, rows in provinces.items() if code in codes}
+
+
 def captcha_details(body):
     # Trang GDT dùng UID của ảnh CAPTCHA làm UUID trong request tra cứu.
     document = html.fromstring(body)

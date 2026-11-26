@@ -1,6 +1,6 @@
 # Ghi chú dự án
 
-Cập nhật ngày 25/11/2026 theo trao đổi và mã hiện có trong workspace.
+Cập nhật ngày 26/11/2026 theo trao đổi và mã hiện có trong workspace.
 
 ## Luồng người dùng muốn
 
@@ -10,7 +10,8 @@ Cập nhật ngày 25/11/2026 theo trao đổi và mã hiện có trong workspac
    không fetch lại danh sách địa bàn hoặc đối chiếu tên qua endpoint khi chạy.
 4. Script tự tạo phiên GDT, lấy UUID và ảnh CAPTCHA để OCR tự động.
 5. Dùng lại CAPTCHA cùng UUID, duyệt 5 danh sách và các trang kết quả.
-6. Ghi dữ liệu ra tệp.
+6. Chọn một/nhiều tỉnh khi chạy, ghi mỗi tỉnh một tệp và lưu checkpoint riêng.
+7. Dừng và chạy lại cùng lệnh để tiếp tục vào đúng tệp của từng tỉnh.
 
 Quyết định ngày 25/11/2026 thay thế luồng 2 cấp và yêu cầu để trống `maHuyen`.
 Vẫn để `kyLb` rỗng và không lọc theo mốc 01/07/2025.
@@ -108,20 +109,44 @@ Kết quả rỗng trong HAR có thông báo `Không tìm thấy kết quả`.
   Metadata kết quả có thêm `district_code` và `district`.
 - `src/gdt_spider.py` dùng Scrapy, xử lý tuần tự địa bàn và từng trang.
 - Spider tự tải trang tra cứu, lấy UID từ ảnh `captchaCtn` làm UUID của phiên,
-  tải ảnh vào `output/captcha.png` rồi gọi `src/gdt_ocr.py` để nhận diện mã.
+  tải ảnh vào `output/<mã-tỉnh>/captcha.png` rồi gọi `src/gdt_ocr.py` để nhận diện mã.
   Scrapy giữ cookie cho các request trong phiên. HAR được dùng làm mẫu kiểm tra cấu trúc trong
   quá trình phát triển.
 - Spider duyệt trực tiếp từng dòng địa bàn trong CSV, không fetch danh mục địa bàn
   hoặc đối chiếu tên. Mã giữ dưới dạng chuỗi và tên giữ theo CSV.
   Đã bỏ bộ đối chiếu tên của luồng 2 cấp.
 - Cách chạy hiện tại là `uv run --locked src/gdt_spider.py`.
-- Job hiện ghi từng trang vào `output/gdt-<thời điểm chạy>.jsonl`.
-  Mỗi lần chạy bắt đầu từ đầu và tạo tệp riêng.
+- Có thể chọn một tỉnh bằng `--province 805`, nhiều tỉnh bằng
+  `--province MA_TINH_1 MA_TINH_2`, hoặc không truyền để crawl tất cả.
+  Mã tỉnh được kiểm tra qua CSV trước khi gửi request; mã lặp chỉ xử lý một lần.
+  Các tỉnh và địa bàn trong tỉnh giữ thứ tự CSV, xử lý tuần tự.
+- Job ghi từng trang vào `output/<mã-tỉnh>/gdt-<thời-điểm-bắt-đầu>.jsonl`.
+  `checkpoint.json` cùng thư mục ghi tên output, mốc byte đã xác nhận,
+  vị trí cần crawl tiếp (mã tỉnh/huyện/xã, search type, trang), và SHA-256 của
+  danh sách địa bàn đã lọc theo tỉnh cùng thứ tự các search type.
+  Vị trí tiếp theo rỗng nghĩa là tỉnh đã hoàn tất. Trang không có kết quả cũng
+  được ghi nhận, hết loại danh sách thì chuyển loại tiếp theo hoặc địa bàn tiếp theo.
+- `src/gdt_checkpoint.py` quản lý cả ghi trang và checkpoint, thay cho `FEEDS`.
+  Chỉ cập nhật tiến độ sau khi ghi/flush/fsync dữ liệu thành công. Checkpoint
+  được ghi vào tệp tạm, fsync rồi thay thế; thư mục cũng được fsync.
+  Lỗi ghi làm job dừng, không gửi request sang trang hoặc tỉnh tiếp theo.
+- Nhấn Ctrl+C một lần và đợi Scrapy đóng. Chạy lại lấy phiên/UUID/CAPTCHA mới,
+  tiếp tục đúng vị trí và đúng tệp timestamp ban đầu của tỉnh. Dữ liệu vượt
+  mốc byte đã xác nhận được cắt để tải lại trang chưa xác nhận, tránh ghi lặp trang.
+  Nếu output ngắn hơn mốc, thiếu output/checkpoint, checkpoint hỏng hoặc danh sách
+  địa bàn của tỉnh đổi thì báo lỗi và giữ dữ liệu để kiểm tra, không tự đoán tiến độ.
+  Tỉnh đã hoàn tất vẫn kiểm tra output trước khi bỏ qua, không lấy thêm phiên/kết quả.
+- `crawl.lock` riêng theo tỉnh giữ khóa trong lúc xử lý tỉnh đó, tránh hai job cùng
+  ghi một tỉnh; không khóa trực tiếp checkpoint vì tệp này được thay thế mỗi trang.
+  CAPTCHA và `last_form.html`/`last_response.html` cũng tách vào thư mục tỉnh.
+  Muốn crawl mới một tỉnh, dừng job rồi lưu trữ cả thư mục tỉnh ra ngoài `output/`.
+  Các output cũ ở thư mục gốc giữ nguyên, không tự nhập vào checkpoint.
 - Bản trước từng dùng SQLite để tiếp tục tiến độ. Sau yêu cầu đơn giản hóa,
   cơ chế đó đã được bỏ khỏi code. Trong `output` hiện có các tệp cũ
   `gdt.sqlite3` và `gdt.jsonl`.
-- Tham số CLI cũ như `--province`, `--ward`, `--captcha` và `--request-url`
-  đã được bỏ trong bản đơn giản hóa.
+- `--province` được thêm lại theo yêu cầu checkpoint từng tỉnh ngày 26/11/2026,
+  nhận mã GDT thay vì tên. Các tham số cũ `--ward`, `--captcha` và `--request-url`
+  vẫn được bỏ.
 - HAR ở thư mục gốc đã được thêm vào `.gitignore` bằng mẫu `*.har`.
 
 ## CAPTCHA và lỗi đã gặp
@@ -149,9 +174,9 @@ việc đọc ra chuỗi là GDT đã xác thực thành công. Parser báo riê
 CAPTCHA từ máy chủ và giữ cơ chế đổi phiên/thử lại có giới hạn.
 
 Job đổi phiên và OCR lại khi phản hồi kết quả rỗng, bị từ chối hoặc thiếu bảng.
-Tối đa 3 lần đổi phiên cho một trang, sau đó báo lỗi. Trang đã xuất trong cùng
-lượt chạy được giữ lại. Lỗi cấu trúc bảng được báo để kiểm tra.
-Chạy lại toàn bộ lệnh vẫn tạo lượt mới từ đầu.
+Tối đa 3 lần đổi phiên cho một trang, sau đó báo lỗi. Trang đã xuất và được
+checkpoint xác nhận được giữ lại. Lỗi cấu trúc bảng được báo để kiểm tra.
+Chạy lại toàn bộ lệnh tiếp tục từ checkpoint riêng của các tỉnh được chọn.
 
 Thư viện Python thêm NumPy, opencv-python-headless và pytesseract.
 Tesseract là chương trình hệ thống cần có trong PATH. Các lần kiểm tra trước chưa có
@@ -181,6 +206,20 @@ hiệu quả với GDT trực tiếp vẫn chưa xác nhận.
 
 ## Kiểm tra và giới hạn
 
+- Checkpoint từng tỉnh ngày 26/11/2026: 18 test offline đạt, bao gồm chọn tỉnh,
+  ghi/đọc tiếp qua 5 loại danh sách và hai xã trùng tên khác huyện, các điểm ngắt
+  khi ghi output hoặc thay checkpoint, output ngắn/thiếu, checkpoint hỏng,
+  danh sách địa bàn đổi, khóa cùng tỉnh, lỗi ghi không chuyển trang, và đường dẫn
+  CAPTCHA/phản hồi lỗi tách riêng theo tỉnh.
+  Bài thử tiến trình Scrapy thật dùng hàm lấy phiên và kết quả mô phỏng: gửi SIGINT,
+  chạy riêng tỉnh khác rồi tiếp tục tỉnh đầu vào đúng tệp timestamp ban đầu,
+  kiểm tra 20 trang duy nhất ở tỉnh đầu và giữ nguyên tệp tỉnh còn lại.
+  Chạy lại tất cả tỉnh đã hoàn tất không lấy phiên/kết quả; mã tỉnh sai không gửi
+  request và output cũ ở thư mục gốc không bị thay đổi.
+  Đã kiểm tra loader/chọn tỉnh với CSV thật: 12.132 địa bàn, 63 tỉnh;
+  riêng An Giang (`805`) có 158 địa bàn. Chưa kiểm chứng checkpoint với GDT trực tiếp.
+  Chống trùng áp dụng cho trang do dừng/chạy lại, không loại trùng của nguồn
+  hoặc bảo đảm ảnh chụp dữ liệu cố định khi GDT cập nhật giữa các lần chạy.
 - Đã chạy đạt 21 test sau khi sửa xử lý PNG trong suốt và thông báo lỗi CAPTCHA.
   Test kiểm tra ảnh RGBA/RGB/grayscale thật, từ chối chuỗi OCR sai độ dài,
   và giữ thông báo GDT báo sai mã xác nhận. Phần gọi Tesseract trong unit test
