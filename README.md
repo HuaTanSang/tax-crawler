@@ -133,3 +133,27 @@ directory outside `output/` to keep the previous data, then run the command agai
 Older output files in the root of `output/` are preserved and are not imported
 into checkpoints. Resume protection does not remove duplicates already present
 in GDT data or guarantee a fixed snapshot when GDT changes its results.
+
+## Export to Excel
+
+Convert the JSONL of each province directory into one `.xlsx` file per search type:
+
+```sh
+uv run --locked src/gdt_export.py output/805
+```
+
+Without a directory, every directory in `output/` that contains JSONL is exported.
+Files are written next to the JSONL and named `<province>_<list name>.xlsx`, with
+Vietnamese diacritics and punctuation removed and words joined by underscores, for
+example `An_Giang_Danh_sach_ho_kinh_doanh_va_muc_thue_phai_nop.xlsx`. Running again
+replaces them.
+
+Each row is one household with the location metadata (`province_code`,
+`district_code`, `ward_code`, `province`, `district`, `ward`)
+followed by the source columns, including merged headers such as
+`Địa chỉ KD / Cũ`. Cells are written as text, so tax codes keep leading zeros and
+amounts stay as in the source. Only bytes confirmed by `checkpoint.json` are read,
+so it is safe to export while a crawl is running. Pages without rows produce no
+lines. A page whose columns differ from earlier pages of the same search type, or
+a list longer than Excel's 1,048,576 rows, stops the export for that province
+without leaving partial files.

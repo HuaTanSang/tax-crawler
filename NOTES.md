@@ -148,6 +148,13 @@ Kết quả rỗng trong HAR có thông báo `Không tìm thấy kết quả`.
   nhận mã GDT thay vì tên. Các tham số cũ `--ward`, `--captcha` và `--request-url`
   vẫn được bỏ.
 - HAR ở thư mục gốc đã được thêm vào `.gitignore` bằng mẫu `*.har`.
+- `src/gdt_export.py` (26/11/2026) chuyển JSONL từng thư mục tỉnh thành mỗi
+  `searchType` một tệp `<tỉnh>_<list_name>.xlsx` đặt cạnh JSONL, bỏ dấu tiếng Việt
+  và dấu câu, từ nối bằng `_`. Theo yêu cầu 26/11/2026 chỉ xuất xlsx (openpyxl,
+  write-only); đã bỏ CSV/TSV và `--ext`. Giữ 6 cột metadata địa bàn (không có
+  `page`, `list_name`, `search_type`) và cột nguồn theo thứ tự `columns`, ô ghi dạng chuỗi.
+  Quá 1.048.576 dòng một sheet thì báo lỗi. Chỉ đọc đến mốc byte của
+  checkpoint; cột khác nhau trong cùng `searchType` thì báo lỗi, không để tệp dở.
 
 ## CAPTCHA và lỗi đã gặp
 
@@ -251,6 +258,10 @@ hiệu quả với GDT trực tiếp vẫn chưa xác nhận.
   An Giang khớp được 35 trong 102 xã/phường của tệp, còn 67 đơn vị chưa có mã
   tương ứng trong danh sách GDT đã ghi lại. Một số ví dụ gồm Phường Long Xuyên,
   Phường Châu Đốc và Xã An Phú.
+
+- Export (trước khi chuyển sang xlsx): 3 test offline trong `tests/test_export.py`. Chạy thật với
+  `output/805` (crawl chưa xong, dừng ở huyện `80517`): 5 tệp, 140.545 / 99.084 /
+  20.466 / 12.246 / 1.149 dòng, khớp số dòng đếm trực tiếp từ JSONL.
 
 ## Việc cần tiếp tục
 
